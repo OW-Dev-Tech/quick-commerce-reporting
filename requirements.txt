@@ -1,0 +1,7 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+apscheduler==3.10.4
+playwright>=1.49
+keyring==25.4.1
+gspread==6.1.2
+google-auth==2.34.0

@@ -1,0 +1,30 @@
+<!doctype html><meta charset=utf-8><title>Settings</title><link rel=stylesheet href=/static/style.css>
+<nav><a href=/>Dashboard</a><a href=/settings>Settings</a></nav><h1>Settings</h1>
+<div class=card><h3>Shared config</h3>
+<p>Brands, platforms and login IDs sync through one Google Sheet so every laptop sees the same list. Passwords never leave this laptop.</p>
+Shared sheet ID <input id=ssid size=44> Daily run time <input id=sched size=5>
+<button onclick=savePrefs()>Save</button> <button onclick=sync()>Sync from shared sheet</button>
+<p id=sstatus></p></div>
+<div class=card><h3>Brands</h3><div id=brands></div>
+Name <input id=bn> Brand's output Google Sheet ID <input id=bs size=40> <button onclick=addBrand()>Add / update</button></div>
+<div class=card><h3>Platform logins</h3><div id=accts></div>
+Brand <select id=ab></select> Platform <input id=ap placeholder="bigbasket" size=12>
+Login (email/phone) <input id=al> Password (this laptop only) <input id=apw type=password> Notes <input id=an>
+<button onclick=addAcct()>Add / update</button></div>
+<script>
+const $=s=>document.getElementById(s);const J=(u,m,b)=>fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function load(){const d=await (await fetch('/api/config')).json();
+ $('ssid').value=d.shared_sheet_id;$('sched').value=d.schedule_time;
+ $('sstatus').textContent=d.shared_enabled?'✅ Connected':(d.service_account_present?'Enter sheet ID':'⚠ Put service_account.json in the data/ folder, and share the sheet with its email');
+ $('brands').innerHTML='<table><tr><th>Brand</th><th>Output sheet</th><th></th></tr>'+d.brands.map(b=>`<tr><td>${esc(b.name)}</td><td>${esc(b.sheet_id)}</td><td><button onclick="delBrand('${encodeURIComponent(b.name)}')">Delete</button></td></tr>`).join('')+'</table>';
+ $('ab').innerHTML=d.brands.map(b=>`<option>${esc(b.name)}</option>`).join('');
+ $('accts').innerHTML='<table><tr><th>Brand</th><th>Platform</th><th>Login</th><th>Password set here?</th><th>Notes</th><th></th></tr>'+d.accounts.map(a=>`<tr><td>${esc(a.brand)}</td><td>${esc(a.platform)}</td><td>${esc(a.login_id)}</td><td>${a.has_password?'yes':'<b>no</b>'}</td><td>${esc(a.notes)}</td><td><button onclick="delAcct(${a.id})">Delete</button></td></tr>`).join('')+'</table>'}
+async function savePrefs(){await J('/api/prefs','POST',{schedule_time:$('sched').value,shared_sheet_id:$('ssid').value});load()}
+async function sync(){const r=await J('/api/sync','POST');const d=await r.json();$('sstatus').textContent=d.message||d.detail;setTimeout(load,1500)}
+async function addBrand(){await J('/api/brands','POST',{name:$('bn').value,sheet_id:$('bs').value});$('bn').value=$('bs').value='';load()}
+async function delBrand(n){if(confirm('Delete brand and its logins?')){await J('/api/brands/'+n,'DELETE');load()}}
+async function addAcct(){await J('/api/accounts','POST',{brand:$('ab').value,platform:$('ap').value,login_id:$('al').value,notes:$('an').value,password:$('apw').value});$('apw').value='';load()}
+async function delAcct(i){await J('/api/accounts/'+i,'DELETE');load()}
+load();
+</script>

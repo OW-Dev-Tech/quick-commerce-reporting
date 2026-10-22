@@ -1,0 +1,11 @@
+:root{--bg:#fafafa;--fg:#1a1a1a;--card:#fff;--bd:#ddd;--ok:#d7f5dd;--warn:#fff3b8;--bad:#fcd6d6;--run:#d6e8fc;--none:#eee}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#eee;--card:#222;--bd:#444;--ok:#1f4d2a;--warn:#5c4d0a;--bad:#5c1f1f;--run:#1f3a5c;--none:#2c2c2c}}
+body{font:14px system-ui;background:var(--bg);color:var(--fg);margin:0;padding:16px 24px}
+nav a{margin-right:16px;color:inherit}h1{font-size:20px}
+button{padding:6px 12px;cursor:pointer}input{padding:5px;margin:2px}
+table{border-collapse:collapse;width:100%}td,th{border:1px solid var(--bd);padding:6px;text-align:left}
+.cell{padding:8px;border-radius:6px;min-width:130px}
+.done{background:var(--ok)}.waiting_otp{background:var(--warn)}.failed{background:var(--bad)}
+.running,.queued{background:var(--run)}.not_run{background:var(--none)}
+pre{background:var(--card);border:1px solid var(--bd);padding:10px;white-space:pre-wrap}
+.card{background:var(--card);border:1px solid var(--bd);padding:12px;margin:12px 0;border-radius:6px}

@@ -1,0 +1,33 @@
+<!doctype html><meta charset=utf-8><title>QC Reporting</title><meta name=viewport content="width=device-width,initial-scale=1">
+<link rel=stylesheet href=/static/style.css>
+<nav><a href=/>Dashboard</a><a href=/settings>Settings</a></nav>
+<h1>Today's reports <button onclick="runAll()">Run all</button></h1>
+<div id=banner></div><div id=grid></div>
+<script>
+const $=s=>document.querySelector(s);
+const LABEL={done:'Done',waiting_otp:'Waiting for OTP',failed:'Failed',running:'Running…',queued:'Queued',not_run:'Not run'};
+async function runAll(){await fetch('/api/run-all',{method:'POST'});load()}
+async function run(id){await fetch('/api/run/'+id,{method:'POST'});load()}
+async function otp(rid){const v=$('#otp'+rid).value;if(!v)return;
+ await fetch(`/api/runs/${rid}/otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:v})});load()}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+async function load(){
+ if(document.activeElement&&document.activeElement.tagName=='INPUT')return; // don't clobber OTP typing
+ const d=await (await fetch('/api/status')).json();
+ $('#banner').innerHTML=d.shared?'':'<p>⚠ Shared config sheet not connected — configs are local only (Settings).</p>';
+ const brands=[...new Set(d.cells.map(c=>c.brand))],plats=[...new Set(d.cells.map(c=>c.platform))];
+ if(!d.cells.length){$('#grid').innerHTML='<p>No brands yet. Add some in Settings.</p>';return}
+ let h='<table><tr><th>Brand</th>'+plats.map(p=>`<th>${esc(p)}</th>`).join('')+'</tr>';
+ for(const b of brands){h+=`<tr><td>${esc(b)}</td>`;
+  for(const p of plats){const c=d.cells.find(x=>x.brand==b&&x.platform==p);
+   if(!c){h+='<td>–</td>';continue}
+   h+=`<td><div class="cell ${c.status}"><b>${LABEL[c.status]}</b><br>`;
+   if(c.status=='waiting_otp')h+=`<input id=otp${c.run_id} size=8 placeholder=OTP><button onclick="otp(${c.run_id})">Submit</button><br>`;
+   if(c.run_id)h+=`<a href=/runs/${c.run_id}>logs</a> `;
+   if(!['running','queued','waiting_otp'].includes(c.status))h+=`<button onclick="run(${c.account_id})">Run</button>`;
+   c.files.forEach(f=>h+=`<br><a href="/api/runs/${c.run_id}/files/${encodeURIComponent(f)}">${esc(f)}</a>`);
+   h+='</div></td>'}
+  h+='</tr>'}
+ $('#grid').innerHTML=h+'</table>'}
+load();setInterval(load,2000);
+</script>

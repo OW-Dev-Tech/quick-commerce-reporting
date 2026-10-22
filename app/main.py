@@ -1,0 +1,179 @@
+import json
+from contextlib import asynccontextmanager
+from datetime import date
+from pathlib import Path
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from apscheduler.schedulers.background import BackgroundScheduler
+from . import db, runner, secrets_store, shared_config
+
+sched = BackgroundScheduler()
+
+
+def reschedule():
+    hh, mm = db.get_setting("schedule_time", "10:00").split(":")
+    sched.add_job(runner.enqueue_all, "cron", hour=int(hh), minute=int(mm), id="daily", replace_existing=True)
+
+
+@asynccontextmanager
+async def lifespan(app):
+    try:
+        shared_config.pull()
+    except Exception as e:
+        print("Shared config pull failed:", e)
+    runner.start(); sched.start(); reschedule()
+    yield
+    sched.shutdown(wait=False)
+
+
+app = FastAPI(lifespan=lifespan)
+STATIC = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+def _push():
+    try:
+        shared_config.push()
+    except Exception as e:
+        print("Shared config push failed:", e)
+
+
+@app.get("/")
+def index():
+    return FileResponse(STATIC / "index.html")
+
+
+@app.get("/settings")
+def settings_page():
+    return FileResponse(STATIC / "settings.html")
+
+
+@app.get("/runs/{rid}")
+def run_page(rid: int):
+    return FileResponse(STATIC / "run.html")
+
+
+@app.get("/api/status")
+def status():
+    rows = db.q("""SELECT a.id account_id, a.brand, a.platform, a.login_id,
+        (SELECT id FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) run_id,
+        (SELECT status FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) status,
+        (SELECT files FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) files
+        FROM accounts a ORDER BY a.brand, a.platform""", (str(date.today()),) * 3)
+    for r in rows:
+        r["status"] = r["status"] or "not_run"
+        r["files"] = [Path(f).name for f in json.loads(r["files"] or "[]")]
+    return {"cells": rows, "shared": shared_config.enabled()}
+
+
+@app.post("/api/run/{account_id}")
+def run_one(account_id: int):
+    return {"run_id": runner.enqueue(account_id)}
+
+
+@app.post("/api/run-all")
+def run_all():
+    return {"run_ids": runner.enqueue_all()}
+
+
+class Otp(BaseModel):
+    value: str
+
+
+@app.post("/api/runs/{rid}/otp")
+def otp(rid: int, body: Otp):
+    if not runner.submit_otp(rid, body.value.strip()):
+        raise HTTPException(404, "Run is not waiting for OTP")
+    return {"ok": True}
+
+
+@app.get("/api/runs/{rid}/logs")
+def logs(rid: int):
+    run = db.q("SELECT * FROM runs WHERE id=?", (rid,))
+    if not run:
+        raise HTTPException(404)
+    return {"run": run[0], "logs": db.q("SELECT ts,line FROM logs WHERE run_id=? ORDER BY id", (rid,))}
+
+
+@app.get("/api/runs/{rid}/files/{name}")
+def download(rid: int, name: str):
+    run = db.q("SELECT files FROM runs WHERE id=?", (rid,))
+    for f in json.loads(run[0]["files"] if run else "[]"):
+        if Path(f).name == name:
+            return FileResponse(f, filename=name)
+    raise HTTPException(404)
+
+
+# ---- settings / config ----
+@app.get("/api/config")
+def config():
+    accts = db.q("SELECT * FROM accounts ORDER BY brand, platform")
+    for a in accts:
+        a["has_password"] = secrets_store.has_password(a["brand"], a["platform"])
+    return {"brands": db.q("SELECT * FROM brands ORDER BY name"), "accounts": accts,
+            "schedule_time": db.get_setting("schedule_time", "10:00"),
+            "shared_sheet_id": db.get_setting("shared_sheet_id"),
+            "service_account_present": shared_config.SA_PATH.exists(),
+            "shared_enabled": shared_config.enabled()}
+
+
+class Brand(BaseModel):
+    name: str
+    sheet_id: str = ""
+
+
+class Account(BaseModel):
+    brand: str
+    platform: str
+    login_id: str
+    notes: str = ""
+    password: str = ""
+
+
+@app.post("/api/brands")
+def save_brand(b: Brand):
+    db.x("INSERT INTO brands(name,sheet_id) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET sheet_id=excluded.sheet_id",
+         (b.name.strip(), b.sheet_id.strip()))
+    _push(); return {"ok": True}
+
+
+@app.delete("/api/brands/{name}")
+def del_brand(name: str):
+    db.x("DELETE FROM accounts WHERE brand=?", (name,)); db.x("DELETE FROM brands WHERE name=?", (name,))
+    _push(); return {"ok": True}
+
+
+@app.post("/api/accounts")
+def save_account(a: Account):
+    db.x("""INSERT INTO accounts(brand,platform,login_id,notes) VALUES(?,?,?,?)
+            ON CONFLICT(brand,platform) DO UPDATE SET login_id=excluded.login_id, notes=excluded.notes""",
+         (a.brand, a.platform.strip(), a.login_id.strip(), a.notes))
+    if a.password:
+        secrets_store.set_password(a.brand, a.platform.strip(), a.password)
+    _push(); return {"ok": True}
+
+
+@app.delete("/api/accounts/{aid}")
+def del_account(aid: int):
+    db.x("DELETE FROM accounts WHERE id=?", (aid,)); _push(); return {"ok": True}
+
+
+class Prefs(BaseModel):
+    schedule_time: str
+    shared_sheet_id: str = ""
+
+
+@app.post("/api/prefs")
+def prefs(p: Prefs):
+    db.set_setting("schedule_time", p.schedule_time); db.set_setting("shared_sheet_id", p.shared_sheet_id.strip())
+    reschedule(); return {"ok": True}
+
+
+@app.post("/api/sync")
+def sync():
+    try:
+        return {"message": shared_config.pull()}
+    except Exception as e:
+        raise HTTPException(500, str(e))
