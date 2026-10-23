@@ -33,7 +33,7 @@ const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=
 const api=async(u,m='GET',b)=>{const r=await fetch(u,{method:m,headers:b?{'Content-Type':'application/json'}:{},body:b?JSON.stringify(b):undefined});
   if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||'Something went wrong')}return r.json()};
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('show'),2600)}
-const LABEL={done:'Ready',waiting_otp:'Needs your code',failed:'Failed',running:'Working…',queued:'Waiting in line',not_run:'Not run yet'};
+const LABEL={done:'Ready',partial:'Partly done',waiting_otp:'Needs your code',failed:'Failed',running:'Working…',queued:'Waiting in line',not_run:'Not run yet'};
 const pill=s=>`<span class="pill ${s}">${['running','queued'].includes(s)?'<i class=spin></i>':''}${LABEL[s]}</span>`;
 let status=null,cfg=null,openRun=null;
 
@@ -86,11 +86,11 @@ async function loadHome(){
   $('#brands').innerHTML=Object.entries(byBrand).map(([b,list])=>`<div class=card><h2>${esc(b)}</h2>`+list.map(c=>{
     const act=!['running','queued','waiting_otp'].includes(c.status);
     return `<div class=plat><div class=pname>${esc(c.platform_label)}<div class=email>${esc(c.login_id)}</div></div>
-     <div class=grow>${pill(c.status)}${c.start_date&&c.status!='not_run'?`<div class=msg>📅 ${c.start_date==c.end_date?c.start_date:c.start_date+' → '+c.end_date}</div>`:''}${c.status=='failed'?`<div class="msg bad">${esc(c.message)}</div>`:c.status=='running'?`<div class=msg>${esc(c.message)}</div>`:''}
+     <div class=grow>${pill(c.status)}${c.start_date&&c.status!='not_run'?`<div class=msg>📅 ${c.start_date==c.end_date?c.start_date:c.start_date+' → '+c.end_date}</div>`:''}${c.status=='failed'||c.status=='partial'?`<div class="msg ${c.status=='failed'?'bad':''}">${esc(c.message)}</div>`:c.status=='running'?`<div class=msg>${esc(c.message)}</div>`:''}
       ${c.files.map(f=>`<div class=msg>📄 <a href="/api/runs/${c.run_id}/files/${encodeURIComponent(f)}">${esc(f)}</a></div>`).join('')}</div>
      ${c.status=='done'?`<button class="btn small" onclick="openFolder(${c.run_id})">📂 Open folder</button>`:''}
      ${c.run_id?`<button class="btn small" onclick="showRun(${c.run_id})">Details</button>`:''}
-     ${act?`<button class="btn small ${c.status=='failed'?'primary':''}" onclick="runOne(${c.account_id})">${c.status=='failed'?'Try again':c.status=='done'?'Download again':'Run'}</button>`:''}</div>`}).join('')+`</div>`).join('');
+     ${act?`<button class="btn small ${c.status=='failed'||c.status=='partial'?'primary':''}" onclick="runOne(${c.account_id},${c.status=='done'})">${c.status=='failed'?'Try again':c.status=='partial'?'Finish remaining':c.status=='done'?'Download again':'Run'}</button>`:''}</div>`}).join('')+`</div>`).join('');
   if(openRun)renderRun(openRun);
 }
 /* ---- day picker ---- */
@@ -113,7 +113,7 @@ function dates(){const d=$('#dDay').value;
   return {start_date:d,end_date:d}}
 async function openFolder(rid){try{await api(`/api/runs/${rid}/open-folder`,'POST')}catch(e){toast(e.message)}}
 async function runAll(){const d=dates();if(!d)return;try{await api('/api/run-all','POST',d);toast('Started - this takes a few minutes');loadHome()}catch(e){toast(e.message)}}
-async function runOne(id){const d=dates();if(!d)return;try{await api('/api/run/'+id,'POST',d);loadHome()}catch(e){toast(e.message)}}
+async function runOne(id,force){const d=dates();if(!d)return;try{await api('/api/run/'+id,'POST',{...d,force:!!force});loadHome()}catch(e){toast(e.message)}}
 async function sendOtp(rid){const v=$('#otp'+rid).value.trim();if(!v)return toast('Type the code first');
   try{await api(`/api/runs/${rid}/otp`,'POST',{value:v});toast('Code sent');window._sig=null;loadHome()}catch(e){toast(e.message)}}
 

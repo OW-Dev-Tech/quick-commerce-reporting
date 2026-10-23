@@ -1,4 +1,5 @@
 import json, queue, threading, traceback
+from pathlib import Path
 from datetime import datetime, date, timedelta
 from . import db, secrets_store, sheets
 from .adapters import get_adapter
@@ -16,20 +17,20 @@ def yesterday():
     return str(date.today() - timedelta(days=1))
 
 
-def enqueue(account_id, start=None, end=None):
+def enqueue(account_id, start=None, end=None, force=False):
     running = db.q("SELECT id FROM runs WHERE account_id=? AND day=? AND status IN ('queued','running','waiting_otp')",
                    (account_id, str(date.today())))
     if running:
         return running[0]["id"]
     start, end = start or yesterday(), end or start or yesterday()
-    rid = db.x("INSERT INTO runs(account_id,day,status,started,start_date,end_date) VALUES(?,?,?,?,?,?)",
-               (account_id, str(date.today()), "queued", _now(), start, end))
+    rid = db.x("INSERT INTO runs(account_id,day,status,started,start_date,end_date,force) VALUES(?,?,?,?,?,?,?)",
+               (account_id, str(date.today()), "queued", _now(), start, end, 1 if force else 0))
     _jobs.put(rid)
     return rid
 
 
-def enqueue_all(start=None, end=None):
-    return [enqueue(a["id"], start, end) for a in db.q("SELECT id FROM accounts")]
+def enqueue_all(start=None, end=None, force=False):
+    return [enqueue(a["id"], start, end, force) for a in db.q("SELECT id FROM accounts")]
 
 
 def submit_otp(run_id, value):
@@ -48,13 +49,24 @@ def _worker():
         _execute(rid)
 
 
-def _previous_ref(run):
-    """If this account already got a report for these exact dates, re-download it rather than
-    generating another one (the portal limits how many reports can be generated)."""
-    r = db.q("""SELECT report_ref FROM runs WHERE account_id=? AND start_date=? AND end_date=?
-                AND status='done' AND report_ref!='' AND id<? ORDER BY id DESC LIMIT 1""",
-             (run["account_id"], run["start_date"], run["end_date"], run["id"]))
-    return r[0]["report_ref"] if r else ""
+def _already_done(run):
+    """What this account already downloaded for these dates, so a re-run only does what's missing.
+    Returns ({kind: path of a file that still exists}, ref of the last sales report for re-download).
+    A forced run ignores existing files but can still re-download the sales report without
+    generating a new one (the portal limits generation)."""
+    done = {}
+    if not run["force"]:
+        sales = db.q("SELECT path FROM downloads WHERE account_id=? AND kind='sales' AND start_date=? AND end_date=? ORDER BY id DESC",
+                     (run["account_id"], run["start_date"], run["end_date"]))
+        ads = db.q("SELECT path FROM downloads WHERE account_id=? AND kind='ads' AND day=? ORDER BY id DESC",
+                   (run["account_id"], str(date.today())))
+        for kind, rows in (("sales", sales), ("ads", ads)):
+            hit = next((r["path"] for r in rows if Path(r["path"]).exists()), None)
+            if hit:
+                done[kind] = hit
+    ref = db.q("SELECT ref FROM downloads WHERE account_id=? AND kind='sales' AND start_date=? AND end_date=? AND ref!='' ORDER BY id DESC LIMIT 1",
+               (run["account_id"], run["start_date"], run["end_date"]))
+    return done, (ref[0]["ref"] if ref else "")
 
 
 def _execute(rid):
@@ -80,14 +92,22 @@ def _execute(rid):
     out = db.DATA / "output" / str(date.today()) / f"{acct['brand']}__{acct['platform']}".replace(" ", "_")
     out.mkdir(parents=True, exist_ok=True)
     try:
+        done, ref = _already_done(run)
         ctx = Ctx(acct, secrets_store.get_password(acct["brand"], acct["platform"]), out, log, ask_otp,
-                  {"start_date": run["start_date"], "end_date": run["end_date"], "reuse_ref": _previous_ref(run)})
+                  {"start_date": run["start_date"], "end_date": run["end_date"], "done": done, "reuse_ref": ref})
         files = get_adapter(acct["platform"]).run(ctx)
         brand = db.q("SELECT sheet_id FROM brands WHERE name=?", (acct["brand"],))
         sheets.push_report(brand[0]["sheet_id"] if brand else "", acct["platform"], files, log)
-        db.x("UPDATE runs SET status='done', finished=?, files=?, report_ref=? WHERE id=?",
-             (_now(), json.dumps([str(f) for f in files]), str(ctx.result.get("report_ref", "")), rid))
-        log("Done")
+        for it in ctx.result.get("items", []):
+            db.x("INSERT INTO downloads(account_id,kind,start_date,end_date,day,ref,path,created) VALUES(?,?,?,?,?,?,?,?)",
+                 (acct["id"], it["kind"], run["start_date"], run["end_date"], str(date.today()), str(it.get("ref", "")), str(it["path"]), _now()))
+        warnings = ctx.result.get("warnings", [])
+        db.x("UPDATE runs SET status=?, finished=?, files=? WHERE id=?",
+             ("partial" if warnings else "done", _now(), json.dumps([str(f) for f in files]), rid))
+        if warnings:
+            log("Finished with problems: " + "; ".join(warnings) + " - press 'Finish remaining' to retry just those")
+        else:
+            log("Done")
     except Exception as e:
         log(f"FAILED: {e}")
         log("TRACE\n" + traceback.format_exc())

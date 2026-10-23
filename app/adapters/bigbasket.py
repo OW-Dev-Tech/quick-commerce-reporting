@@ -4,6 +4,7 @@ Flutter's accessibility layer to get real, clickable elements.
 Implemented: email + OTP login, session reuse. TODO: report download (needs report details)."""
 import re
 import time
+from pathlib import Path
 from playwright.sync_api import sync_playwright
 from .. import db
 from .base import Adapter
@@ -51,6 +52,18 @@ def _on_login_screen(pg):
 
 class BigBasketAdapter(Adapter):
     def run(self, ctx):
+        done = ctx.params.get("done", {})              # kind -> path of a file we already have
+        wanted = ["sales"] + (["ads"] if ctx.account.get("ads_report", 1) else [])
+        files = [Path(done[k]) for k in wanted if k in done]
+        todo = [k for k in wanted if k not in done]
+        for k in wanted:
+            if k in done:
+                ctx.log(f"{'Sales' if k == 'sales' else 'Ads'} report already downloaded - skipping ({Path(done[k]).name})")
+        if not todo:
+            ctx.log("Everything is already downloaded for these dates")
+            return files
+        ctx.result["items"] = []
+        ctx.result["warnings"] = []
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
             kw = {"viewport": {"width": 1280, "height": 800}}
@@ -76,12 +89,18 @@ class BigBasketAdapter(Adapter):
 
                 context.storage_state(path=str(ctx.session_file))
                 self._open_view_reports(ctx, pg)
-                files = [self._generate_and_download(ctx, pg, context)]
-                if ctx.account.get("ads_report", 1):
+                if "sales" in todo:
+                    path = self._generate_and_download(ctx, pg, context)
+                    files.append(path)
+                    ctx.result["items"].append({"kind": "sales", "path": path, "ref": ctx.result.get("report_ref", "")})
+                if "ads" in todo:
                     try:
-                        files.append(self._download_ads_performance(ctx, pg))
-                    except Exception as e:     # the sales report is already safe - don't lose it
+                        path = self._download_ads_performance(ctx, pg)
+                        files.append(path)
+                        ctx.result["items"].append({"kind": "ads", "path": path})
+                    except Exception as e:     # keep whatever we already downloaded
                         ctx.log(f"Ads report failed: {e}")
+                        ctx.result["warnings"].append("Ads report failed")
                         try:
                             pg.screenshot(path=str(ctx.out_dir / "ads_error.png"))
                         except Exception:

@@ -80,6 +80,7 @@ def status():
 class RunReq(BaseModel):
     start_date: str = ""
     end_date: str = ""
+    force: bool = False
 
 
 def _dates(r: RunReq):
@@ -93,12 +94,12 @@ def _dates(r: RunReq):
 
 @app.post("/api/run/{account_id}")
 def run_one(account_id: int, r: RunReq = RunReq()):
-    return {"run_id": runner.enqueue(account_id, *_dates(r))}
+    return {"run_id": runner.enqueue(account_id, *_dates(r), force=r.force)}
 
 
 @app.post("/api/run-all")
 def run_all(r: RunReq = RunReq()):
-    return {"run_ids": runner.enqueue_all(*_dates(r))}
+    return {"run_ids": runner.enqueue_all(*_dates(r), force=r.force)}
 
 
 class Otp(BaseModel):

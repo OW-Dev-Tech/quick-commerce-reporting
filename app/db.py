@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS accounts(id INTEGER PRIMARY KEY, brand TEXT, platform
 CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, account_id INTEGER, day TEXT, status TEXT, started TEXT, finished TEXT, files TEXT DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY, run_id INTEGER, ts TEXT, line TEXT);
 CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS downloads(id INTEGER PRIMARY KEY, account_id INTEGER, kind TEXT, start_date TEXT, end_date TEXT,
+  day TEXT, ref TEXT DEFAULT '', path TEXT, created TEXT);
 """)
 
 
@@ -26,6 +28,7 @@ _migrate("accounts", "report_hint", "TEXT DEFAULT ''")
 _migrate("accounts", "ads_report", "INTEGER DEFAULT 1")
 _migrate("runs", "start_date", "TEXT DEFAULT ''")
 _migrate("runs", "end_date", "TEXT DEFAULT ''")
+_migrate("runs", "force", "INTEGER DEFAULT 0")
 _migrate("runs", "report_ref", "TEXT DEFAULT ''")   # portal-side id of the generated report, so it can be re-downloaded
 
 
