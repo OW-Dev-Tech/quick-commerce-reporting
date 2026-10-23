@@ -77,6 +77,15 @@ class BigBasketAdapter(Adapter):
                 context.storage_state(path=str(ctx.session_file))
                 self._open_view_reports(ctx, pg)
                 files = [self._generate_and_download(ctx, pg, context)]
+                if ctx.account.get("ads_report", 1):
+                    try:
+                        files.append(self._download_ads_performance(ctx, pg))
+                    except Exception as e:     # the sales report is already safe - don't lose it
+                        ctx.log(f"Ads report failed: {e}")
+                        try:
+                            pg.screenshot(path=str(ctx.out_dir / "ads_error.png"))
+                        except Exception:
+                            pass
                 if db.get_setting("keep_browser_open", "1") == "1":
                     ctx.log("Done. The browser stays open - close the Chrome window when you're done.")
                     self._wait_until_closed(ctx, pg, context)
@@ -111,6 +120,19 @@ class BigBasketAdapter(Adapter):
         start, end = ctx.params["start_date"], ctx.params["end_date"]
         hint = (ctx.account.get("report_hint") or "gamma").strip()
         email = ctx.account["login_id"].lower()
+
+        reuse = ctx.params.get("reuse_ref")
+        if reuse:
+            ctx.log("A report for these dates was already generated - downloading it again "
+                    "(this doesn't use up BigBasket's report limit)")
+            try:
+                path = self._download_via_api(ctx, context, {"transaction_id": reuse})
+                ctx.result["report_ref"] = reuse
+                ctx.log(f"Downloaded {path.name}")
+                return path
+            except Exception as e:
+                ctx.log(f"Could not re-download the earlier report ({e}); generating a new one")
+
         before = max([t["id"] for t in self._transactions(context)] or [0])
 
         ctx.log(f"Generating report '{hint}' for {start} to {end}, all cities")
@@ -147,7 +169,7 @@ class BigBasketAdapter(Adapter):
             if not mine:
                 if time.time() > deadline - REPORT_WAIT_SECONDS + 90:
                     pg.screenshot(path=str(ctx.out_dir / "error.png"))
-                    raise RuntimeError("BigBasket did not accept the report request - check the dates and report name")
+                    raise RuntimeError("BigBasket did not accept the report request - the daily report limit may be used up, or check the dates and report name (see after_submit.png)")
                 continue
             t = max(mine, key=lambda x: x["id"])
             if t["status"] != last:
@@ -158,6 +180,7 @@ class BigBasketAdapter(Adapter):
         else:
             raise RuntimeError("Report was not ready after 15 minutes")
 
+        ctx.result["report_ref"] = str(t["transaction_id"])
         ctx.log(f"Report ready ({t.get('row_count', '?')} rows), downloading")
         try:
             path = self._download_via_api(ctx, context, t)
@@ -188,6 +211,39 @@ class BigBasketAdapter(Adapter):
             pg.mouse.click(1259, 383)                  # download arrow on the top (newest) row
         path = ctx.out_dir / d.value.suggested_filename
         d.value.save_as(str(path))
+        return path
+
+    def _download_ads_performance(self, ctx, pg):
+        """Sidebar 'Open Ads Dashboard' -> Performance Summary -> download icon -> Initiate Download
+        -> wait for the file to be prepared -> Download. Uses the portal's default date range.
+        The Ads app is a separate site embedded in the page, so we drive it through its own DOM."""
+        ctx.log("Opening the Ads dashboard")
+        pg.mouse.click(152, 755)                       # 'Open Ads Dashboard' in the sidebar
+        frame = None
+        for _ in range(40):
+            pg.wait_for_timeout(1000)
+            frame = next((f for f in pg.frames if "osmos.ai/campaigns" in f.url), None)
+            if frame and frame.locator("button.download-report").count():
+                break
+        else:
+            raise RuntimeError("the Ads dashboard did not load")
+        pg.wait_for_timeout(2000)
+        frame.locator("button.download-report").first.click()      # Performance Summary download icon
+        pg.wait_for_timeout(2500)
+        frame.get_by_role("button", name="Initiate Download").click()
+        ctx.log("Ads report requested, waiting for the file to be prepared")
+        ready = "[...document.querySelectorAll('button')].find(x=>/^download$/i.test(x.innerText.trim()))"
+        for _ in range(60):                            # up to 5 minutes
+            pg.wait_for_timeout(5000)
+            if frame.evaluate(f"(()=>{{const b={ready};return !!b&&!b.disabled}})()"):
+                break
+        else:
+            raise RuntimeError("the Ads report was not ready after 5 minutes")
+        with pg.expect_download(timeout=30000) as d:
+            frame.evaluate(f"{ready}.click()")
+        path = ctx.out_dir / d.value.suggested_filename
+        d.value.save_as(str(path))
+        ctx.log(f"Downloaded {path.name}")
         return path
 
     def _wait_until_closed(self, ctx, pg, context):

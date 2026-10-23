@@ -23,8 +23,10 @@ def _migrate(table, column, ddl):
 
 
 _migrate("accounts", "report_hint", "TEXT DEFAULT ''")
+_migrate("accounts", "ads_report", "INTEGER DEFAULT 1")
 _migrate("runs", "start_date", "TEXT DEFAULT ''")
 _migrate("runs", "end_date", "TEXT DEFAULT ''")
+_migrate("runs", "report_ref", "TEXT DEFAULT ''")   # portal-side id of the generated report, so it can be re-downloaded
 
 
 def q(sql, args=()):

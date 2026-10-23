@@ -120,6 +120,21 @@ def logs(rid: int):
     return {"run": run[0], "logs": db.q("SELECT ts,line FROM logs WHERE run_id=? ORDER BY id", (rid,))}
 
 
+@app.post("/api/runs/{rid}/open-folder")
+def open_folder(rid: int):
+    import os, subprocess, sys
+    run = db.q("SELECT files FROM runs WHERE id=?", (rid,))
+    files = json.loads(run[0]["files"]) if run else []
+    folder = Path(files[0]).parent.resolve() if files else None
+    if not folder or not folder.is_dir() or (db.DATA / "output").resolve() not in folder.parents:
+        raise HTTPException(404, "Folder not found")
+    if sys.platform == "win32":
+        os.startfile(folder)
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(folder)])
+    return {"ok": True}
+
+
 @app.get("/api/runs/{rid}/files/{name}")
 def download(rid: int, name: str):
     run = db.q("SELECT files FROM runs WHERE id=?", (rid,))
@@ -155,6 +170,7 @@ class Account(BaseModel):
     notes: str = ""
     password: str = ""
     report_hint: str = ""
+    ads_report: bool = True
 
 
 @app.post("/api/brands")
@@ -172,10 +188,10 @@ def del_brand(name: str):
 
 @app.post("/api/accounts")
 def save_account(a: Account):
-    db.x("""INSERT INTO accounts(brand,platform,login_id,notes,report_hint) VALUES(?,?,?,?,?)
+    db.x("""INSERT INTO accounts(brand,platform,login_id,notes,report_hint,ads_report) VALUES(?,?,?,?,?,?)
             ON CONFLICT(brand,platform) DO UPDATE SET login_id=excluded.login_id, notes=excluded.notes,
-            report_hint=excluded.report_hint""",
-         (a.brand, a.platform.strip(), a.login_id.strip(), a.notes, a.report_hint.strip()))
+            report_hint=excluded.report_hint, ads_report=excluded.ads_report""",
+         (a.brand, a.platform.strip(), a.login_id.strip(), a.notes, a.report_hint.strip(), 1 if a.ads_report else 0))
     if a.password:
         secrets_store.set_password(a.brand, a.platform.strip(), a.password)
     _push(); return {"ok": True}

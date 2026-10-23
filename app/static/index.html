@@ -23,6 +23,7 @@
   <p class=hint>Saved only on this computer. Leave empty to keep the existing one.</p></div>
  <div id=rpWrap><label>Report name (or just part of it)</label><input id=lReport placeholder="e.g. gamma">
   <p class=hint>Type a few letters of the report's name, like you would in the portal. We pick the first match.</p></div>
+ <label id=adsWrap style="font-weight:500;display:none;gap:8px;align-items:center;margin-top:14px"><input type=checkbox id=lAds style="width:auto"> Also download the Ads "Performance Summary" report</label>
  <label>Notes (optional)</label><input id=lNotes placeholder="e.g. owned by Priya">
  <div class=row style="margin-top:18px;justify-content:flex-end"><button class=btn onclick="dLogin.close()">Cancel</button><button class="btn primary" onclick="saveLogin()">Save</button></div>
 </form></dialog>
@@ -87,8 +88,9 @@ async function loadHome(){
     return `<div class=plat><div class=pname>${esc(c.platform_label)}<div class=email>${esc(c.login_id)}</div></div>
      <div class=grow>${pill(c.status)}${c.start_date&&c.status!='not_run'?`<div class=msg>📅 ${c.start_date==c.end_date?c.start_date:c.start_date+' → '+c.end_date}</div>`:''}${c.status=='failed'?`<div class="msg bad">${esc(c.message)}</div>`:c.status=='running'?`<div class=msg>${esc(c.message)}</div>`:''}
       ${c.files.map(f=>`<div class=msg>📄 <a href="/api/runs/${c.run_id}/files/${encodeURIComponent(f)}">${esc(f)}</a></div>`).join('')}</div>
+     ${c.status=='done'?`<button class="btn small" onclick="openFolder(${c.run_id})">📂 Open folder</button>`:''}
      ${c.run_id?`<button class="btn small" onclick="showRun(${c.run_id})">Details</button>`:''}
-     ${act?`<button class="btn small ${c.status=='failed'?'primary':''}" onclick="runOne(${c.account_id})">${c.status=='failed'?'Try again':c.status=='done'?'Run again':'Run'}</button>`:''}</div>`}).join('')+`</div>`).join('');
+     ${act?`<button class="btn small ${c.status=='failed'?'primary':''}" onclick="runOne(${c.account_id})">${c.status=='failed'?'Try again':c.status=='done'?'Download again':'Run'}</button>`:''}</div>`}).join('')+`</div>`).join('');
   if(openRun)renderRun(openRun);
 }
 /* ---- day picker ---- */
@@ -109,6 +111,7 @@ function dates(){const d=$('#dDay').value;
   if(!d){toast('Pick a day first');return null}
   if(d>$('#dDay').max){toast("Today and future days can't be selected");return null}
   return {start_date:d,end_date:d}}
+async function openFolder(rid){try{await api(`/api/runs/${rid}/open-folder`,'POST')}catch(e){toast(e.message)}}
 async function runAll(){const d=dates();if(!d)return;try{await api('/api/run-all','POST',d);toast('Started - this takes a few minutes');loadHome()}catch(e){toast(e.message)}}
 async function runOne(id){const d=dates();if(!d)return;try{await api('/api/run/'+id,'POST',d);loadHome()}catch(e){toast(e.message)}}
 async function sendOtp(rid){const v=$('#otp'+rid).value.trim();if(!v)return toast('Type the code first');
@@ -157,16 +160,16 @@ async function saveBrand(){const n=$('#bName').value.trim();if(!n)return toast('
   await api('/api/brands','POST',{name:n,sheet_id:$('#bSheet').value});dBrand.close();toast('Brand saved');loadSetup()}
 async function delBrand(enc){const n=decodeURIComponent(enc);if(!confirm(`Delete ${n} and all its logins?`))return;await api('/api/brands/'+enc,'DELETE');loadSetup()}
 function platChange(){const p=cfg.platforms.find(x=>x.id==$('#lPlat').value);$('#pwWrap').style.display=p&&p.needs_password?'block':'none';
-  $('#rpWrap').style.display=p&&p.has_reports?'block':'none';if(p&&p.has_reports&&!$('#lReport').value&&!$('#lPlat').disabled)$('#lReport').value='gamma'}
+  $('#rpWrap').style.display=p&&p.has_reports?'block':'none';$('#adsWrap').style.display=p&&p.has_reports?'flex':'none';if(p&&p.has_reports&&!$('#lReport').value&&!$('#lPlat').disabled)$('#lReport').value='gamma'}
 function editLogin(id){const a=id?cfg.accounts.find(x=>x.id==id):null;
   $('#dLoginTitle').textContent=a?'Edit login':'Add login';
   $('#lBrand').innerHTML=cfg.brands.map(b=>`<option>${esc(b.name)}</option>`).join('');
   $('#lPlat').innerHTML=cfg.platforms.map(p=>`<option value="${p.id}" ${p.ready?'':'disabled'}>${esc(p.label)}${p.ready?'':' - coming soon'}</option>`).join('');
   if(a){$('#lBrand').value=a.brand;$('#lPlat').value=a.platform}
   $('#lBrand').disabled=$('#lPlat').disabled=!!a;
-  $('#lEmail').value=a?a.login_id:'';$('#lNotes').value=a?a.notes:'';$('#lPw').value='';$('#lReport').value=a?a.report_hint:'';platChange();dLogin.showModal()}
+  $('#lEmail').value=a?a.login_id:'';$('#lNotes').value=a?a.notes:'';$('#lPw').value='';$('#lReport').value=a?a.report_hint:'';$('#lAds').checked=a?!!a.ads_report:true;platChange();dLogin.showModal()}
 async function saveLogin(){const e=$('#lEmail').value.trim();if(!e)return toast('Login email is required');
-  await api('/api/accounts','POST',{brand:$('#lBrand').value,platform:$('#lPlat').value,login_id:e,notes:$('#lNotes').value,password:$('#lPw').value,report_hint:$('#lReport').value});
+  await api('/api/accounts','POST',{brand:$('#lBrand').value,platform:$('#lPlat').value,login_id:e,notes:$('#lNotes').value,password:$('#lPw').value,report_hint:$('#lReport').value,ads_report:$('#lAds').checked});
   dLogin.close();toast('Login saved');loadSetup()}
 async function delLogin(id){if(!confirm('Delete this login?'))return;await api('/api/accounts/'+id,'DELETE');loadSetup()}
 async function saveSched(){await api('/api/prefs','POST',{schedule_time:$('#sched').value,shared_sheet_id:cfg.shared_sheet_id,keep_browser_open:$('#keepOpen').checked});toast('Saved')}

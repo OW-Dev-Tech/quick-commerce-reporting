@@ -48,6 +48,15 @@ def _worker():
         _execute(rid)
 
 
+def _previous_ref(run):
+    """If this account already got a report for these exact dates, re-download it rather than
+    generating another one (the portal limits how many reports can be generated)."""
+    r = db.q("""SELECT report_ref FROM runs WHERE account_id=? AND start_date=? AND end_date=?
+                AND status='done' AND report_ref!='' AND id<? ORDER BY id DESC LIMIT 1""",
+             (run["account_id"], run["start_date"], run["end_date"], run["id"]))
+    return r[0]["report_ref"] if r else ""
+
+
 def _execute(rid):
     run = db.q("SELECT * FROM runs WHERE id=?", (rid,))[0]
     acct = db.q("SELECT * FROM accounts WHERE id=?", (run["account_id"],))
@@ -72,12 +81,12 @@ def _execute(rid):
     out.mkdir(parents=True, exist_ok=True)
     try:
         ctx = Ctx(acct, secrets_store.get_password(acct["brand"], acct["platform"]), out, log, ask_otp,
-                  {"start_date": run["start_date"], "end_date": run["end_date"]})
+                  {"start_date": run["start_date"], "end_date": run["end_date"], "reuse_ref": _previous_ref(run)})
         files = get_adapter(acct["platform"]).run(ctx)
         brand = db.q("SELECT sheet_id FROM brands WHERE name=?", (acct["brand"],))
         sheets.push_report(brand[0]["sheet_id"] if brand else "", acct["platform"], files, log)
-        db.x("UPDATE runs SET status='done', finished=?, files=? WHERE id=?",
-             (_now(), json.dumps([str(f) for f in files]), rid))
+        db.x("UPDATE runs SET status='done', finished=?, files=?, report_ref=? WHERE id=?",
+             (_now(), json.dumps([str(f) for f in files]), str(ctx.result.get("report_ref", "")), rid))
         log("Done")
     except Exception as e:
         log(f"FAILED: {e}")
