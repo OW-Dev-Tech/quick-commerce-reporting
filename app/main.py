@@ -62,8 +62,10 @@ def status():
     rows = db.q("""SELECT a.id account_id, a.brand, a.platform, a.login_id,
         (SELECT id FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) run_id,
         (SELECT status FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) status,
-        (SELECT files FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) files
-        FROM accounts a ORDER BY a.brand, a.platform""", (str(date.today()),) * 3)
+        (SELECT files FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) files,
+        (SELECT start_date FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) start_date,
+        (SELECT end_date FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) end_date
+        FROM accounts a ORDER BY a.brand, a.platform""", (str(date.today()),) * 5)
     labels = {p["id"]: p["label"] for p in PLATFORMS}
     for r in rows:
         r["status"] = r["status"] or "not_run"
@@ -71,18 +73,32 @@ def status():
         r["platform_label"] = labels.get(r["platform"].lower(), r["platform"])
         last = db.q("SELECT line FROM logs WHERE run_id=? AND line NOT LIKE 'TRACE%' ORDER BY id DESC LIMIT 1", (r["run_id"],)) if r["run_id"] else []
         r["message"] = last[0]["line"] if last else ""
-    return {"cells": rows, "shared": shared_config.enabled(),
+    return {"cells": rows, "shared": shared_config.enabled(), "yesterday": runner.yesterday(),
             "schedule_time": db.get_setting("schedule_time", "10:00")}
 
 
+class RunReq(BaseModel):
+    start_date: str = ""
+    end_date: str = ""
+
+
+def _dates(r: RunReq):
+    for d in (r.start_date, r.end_date):
+        if d and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+            raise HTTPException(400, "Dates must look like 2026-10-22")
+    if r.start_date and r.end_date and r.start_date > r.end_date:
+        raise HTTPException(400, "Start date can't be after end date")
+    return r.start_date or None, r.end_date or None
+
+
 @app.post("/api/run/{account_id}")
-def run_one(account_id: int):
-    return {"run_id": runner.enqueue(account_id)}
+def run_one(account_id: int, r: RunReq = RunReq()):
+    return {"run_id": runner.enqueue(account_id, *_dates(r))}
 
 
 @app.post("/api/run-all")
-def run_all():
-    return {"run_ids": runner.enqueue_all()}
+def run_all(r: RunReq = RunReq()):
+    return {"run_ids": runner.enqueue_all(*_dates(r))}
 
 
 class Otp(BaseModel):
@@ -121,7 +137,8 @@ def config():
         a["has_password"] = secrets_store.has_password(a["brand"], a["platform"])
     return {"brands": db.q("SELECT * FROM brands ORDER BY name"), "accounts": accts,
             "schedule_time": db.get_setting("schedule_time", "10:00"),
-            "shared_sheet_id": db.get_setting("shared_sheet_id"), "platforms": PLATFORMS,
+            "shared_sheet_id": db.get_setting("shared_sheet_id"),
+            "keep_browser_open": db.get_setting("keep_browser_open", "1") == "1", "platforms": PLATFORMS,
             "service_account_present": shared_config.SA_PATH.exists(),
             "shared_enabled": shared_config.enabled()}
 
@@ -137,6 +154,7 @@ class Account(BaseModel):
     login_id: str
     notes: str = ""
     password: str = ""
+    report_hint: str = ""
 
 
 @app.post("/api/brands")
@@ -154,9 +172,10 @@ def del_brand(name: str):
 
 @app.post("/api/accounts")
 def save_account(a: Account):
-    db.x("""INSERT INTO accounts(brand,platform,login_id,notes) VALUES(?,?,?,?)
-            ON CONFLICT(brand,platform) DO UPDATE SET login_id=excluded.login_id, notes=excluded.notes""",
-         (a.brand, a.platform.strip(), a.login_id.strip(), a.notes))
+    db.x("""INSERT INTO accounts(brand,platform,login_id,notes,report_hint) VALUES(?,?,?,?,?)
+            ON CONFLICT(brand,platform) DO UPDATE SET login_id=excluded.login_id, notes=excluded.notes,
+            report_hint=excluded.report_hint""",
+         (a.brand, a.platform.strip(), a.login_id.strip(), a.notes, a.report_hint.strip()))
     if a.password:
         secrets_store.set_password(a.brand, a.platform.strip(), a.password)
     _push(); return {"ok": True}
@@ -170,10 +189,12 @@ def del_account(aid: int):
 class Prefs(BaseModel):
     schedule_time: str
     shared_sheet_id: str = ""
+    keep_browser_open: bool = True
 
 
 @app.post("/api/prefs")
 def prefs(p: Prefs):
+    db.set_setting("keep_browser_open", "1" if p.keep_browser_open else "0")
     db.set_setting("schedule_time", p.schedule_time); db.set_setting("shared_sheet_id", sheet_id(p.shared_sheet_id))
     reschedule(); return {"ok": True}
 

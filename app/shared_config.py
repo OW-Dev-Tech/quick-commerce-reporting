@@ -34,15 +34,16 @@ def pull():
         return "shared sheet not configured"
     book = _book()
     brands = _tab(book, "brands", ["name", "sheet_id"]).get_all_records()
-    accts = _tab(book, "accounts", ["brand", "platform", "login_id", "notes"]).get_all_records()
+    accts = _tab(book, "accounts", ["brand", "platform", "login_id", "notes", "report_hint"]).get_all_records()
     db.x("DELETE FROM brands")
     for b in brands:
         db.x("INSERT INTO brands(name, sheet_id) VALUES(?,?)", (b["name"], str(b.get("sheet_id", ""))))
     keep = []
     for a in accts:
-        db.x("""INSERT INTO accounts(brand,platform,login_id,notes) VALUES(?,?,?,?)
-                ON CONFLICT(brand,platform) DO UPDATE SET login_id=excluded.login_id, notes=excluded.notes""",
-             (a["brand"], a["platform"], a["login_id"], a.get("notes", "")))
+        db.x("""INSERT INTO accounts(brand,platform,login_id,notes,report_hint) VALUES(?,?,?,?,?)
+                ON CONFLICT(brand,platform) DO UPDATE SET login_id=excluded.login_id, notes=excluded.notes,
+                report_hint=excluded.report_hint""",
+             (a["brand"], a["platform"], a["login_id"], a.get("notes", ""), str(a.get("report_hint", ""))))
         keep.append((a["brand"], a["platform"]))
     for r in db.q("SELECT id,brand,platform FROM accounts"):
         if (r["brand"], r["platform"]) not in keep:
@@ -55,8 +56,8 @@ def push():
         return
     book = _book()
     bws = _tab(book, "brands", ["name", "sheet_id"])
-    aws = _tab(book, "accounts", ["brand", "platform", "login_id", "notes"])
+    aws = _tab(book, "accounts", ["brand", "platform", "login_id", "notes", "report_hint"])
     bws.clear(); aws.clear()
     bws.update("A1", [["name", "sheet_id"]] + [[b["name"], b["sheet_id"]] for b in db.q("SELECT * FROM brands ORDER BY name")])
-    aws.update("A1", [["brand", "platform", "login_id", "notes"]] +
-               [[a["brand"], a["platform"], a["login_id"], a["notes"]] for a in db.q("SELECT * FROM accounts ORDER BY brand,platform")])
+    aws.update("A1", [["brand", "platform", "login_id", "notes", "report_hint"]] +
+               [[a["brand"], a["platform"], a["login_id"], a["notes"], a["report_hint"]] for a in db.q("SELECT * FROM accounts ORDER BY brand,platform")])

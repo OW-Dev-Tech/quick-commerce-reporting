@@ -11,7 +11,7 @@ def get_adapter(platform):
 
 # What users can pick in the UI. needs_password: portal uses a password (BigBasket is email + OTP only).
 PLATFORMS = [
-    {"id": "bigbasket", "label": "BigBasket", "ready": True, "needs_password": False},
+    {"id": "bigbasket", "label": "BigBasket", "ready": True, "needs_password": False, "has_reports": True},
     {"id": "demo", "label": "Demo (practice mode)", "ready": True, "needs_password": False},
     {"id": "blinkit", "label": "Blinkit", "ready": False, "needs_password": False},
     {"id": "zepto", "label": "Zepto", "ready": False, "needs_password": False},

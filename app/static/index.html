@@ -21,6 +21,8 @@
  <label>Login email</label><input id=lEmail type=email placeholder="the email used to sign in to the portal">
  <div id=pwWrap><label>Password</label><input id=lPw type=password autocomplete=new-password>
   <p class=hint>Saved only on this computer. Leave empty to keep the existing one.</p></div>
+ <div id=rpWrap><label>Report name (or just part of it)</label><input id=lReport placeholder="e.g. gamma">
+  <p class=hint>Type a few letters of the report's name, like you would in the portal. We pick the first match.</p></div>
  <label>Notes (optional)</label><input id=lNotes placeholder="e.g. owned by Priya">
  <div class=row style="margin-top:18px;justify-content:flex-end"><button class=btn onclick="dLogin.close()">Cancel</button><button class="btn primary" onclick="saveLogin()">Save</button></div>
 </form></dialog>
@@ -60,7 +62,13 @@ async function loadHome(){
   const [hh,mm]=status.schedule_time.split(':');const t=new Date(2000,0,1,hh,mm).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
   const sig=JSON.stringify(waiting.map(w=>w.run_id));
   if(!$('#home')){
-    $('#app').innerHTML=`<div id=home><div id=actions></div><div id=summary></div><div id=brands></div></div>`;window._sig=null}
+    $('#app').innerHTML=`<div id=home><div id=actions></div>
+     <div class=card><h2>Which day's report?</h2>
+      <div class=row id=chips style="margin:10px 0"></div>
+      <div class=row><span>Or pick a day <input type=date id=dDay style="width:165px" onchange="showDay()"></span></div>
+      <div id=rangeText style="margin-top:12px;font-weight:600"></div>
+      <div class=hint>One report is downloaded per day. The automatic daily run always uses yesterday. Today can't be picked because today's sales aren't complete yet.</div></div>
+     <div id=summary></div><div id=brands></div></div>`;window._sig=null;initDates()}
   if(window._sig!==sig){ // only rebuild the code boxes when who's waiting changes, so typing isn't wiped
     window._sig=sig;
     $('#actions').innerHTML=waiting.map(w=>`<div class="card action"><h2>🔑 ${esc(w.platform_label)} · ${esc(w.brand)} needs a code</h2>
@@ -77,14 +85,32 @@ async function loadHome(){
   $('#brands').innerHTML=Object.entries(byBrand).map(([b,list])=>`<div class=card><h2>${esc(b)}</h2>`+list.map(c=>{
     const act=!['running','queued','waiting_otp'].includes(c.status);
     return `<div class=plat><div class=pname>${esc(c.platform_label)}<div class=email>${esc(c.login_id)}</div></div>
-     <div class=grow>${pill(c.status)}${c.status=='failed'?`<div class="msg bad">${esc(c.message)}</div>`:c.status=='running'?`<div class=msg>${esc(c.message)}</div>`:''}
+     <div class=grow>${pill(c.status)}${c.start_date&&c.status!='not_run'?`<div class=msg>📅 ${c.start_date==c.end_date?c.start_date:c.start_date+' → '+c.end_date}</div>`:''}${c.status=='failed'?`<div class="msg bad">${esc(c.message)}</div>`:c.status=='running'?`<div class=msg>${esc(c.message)}</div>`:''}
       ${c.files.map(f=>`<div class=msg>📄 <a href="/api/runs/${c.run_id}/files/${encodeURIComponent(f)}">${esc(f)}</a></div>`).join('')}</div>
      ${c.run_id?`<button class="btn small" onclick="showRun(${c.run_id})">Details</button>`:''}
      ${act?`<button class="btn small ${c.status=='failed'?'primary':''}" onclick="runOne(${c.account_id})">${c.status=='failed'?'Try again':c.status=='done'?'Run again':'Run'}</button>`:''}</div>`}).join('')+`</div>`).join('');
   if(openRun)renderRun(openRun);
 }
-async function runAll(){await api('/api/run-all','POST');toast('Started - this takes a few minutes');loadHome()}
-async function runOne(id){await api('/api/run/'+id,'POST');loadHome()}
+/* ---- day picker ---- */
+const fmt=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x};
+const pretty=s=>new Date(s+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+const noon=()=>{const t=new Date();t.setHours(12,0,0,0);return t};
+function setDay(s){$('#dDay').value=s;showDay()}
+function showDay(){const s=$('#dDay').value;window._day=s;
+  document.querySelectorAll('#chips .btn').forEach(b=>b.classList.toggle('on',b.dataset.d==s));
+  $('#rangeText').innerHTML=s?`📅 ${pretty(s)}`:'Pick a day'}
+function initDates(){const y=addDays(noon(),-1);$('#dDay').max=fmt(y);
+  $('#chips').innerHTML=[['Yesterday',1],['2 days ago',2],['3 days ago',3]].map(([l,n])=>{const d=fmt(addDays(noon(),-n));
+    return `<button class="btn small" data-d="${d}" onclick="setDay('${d}')">${l}</button>`}).join('');
+  setDay(window._day||fmt(y))}
+
+function dates(){const d=$('#dDay').value;
+  if(!d){toast('Pick a day first');return null}
+  if(d>$('#dDay').max){toast("Today and future days can't be selected");return null}
+  return {start_date:d,end_date:d}}
+async function runAll(){const d=dates();if(!d)return;try{await api('/api/run-all','POST',d);toast('Started - this takes a few minutes');loadHome()}catch(e){toast(e.message)}}
+async function runOne(id){const d=dates();if(!d)return;try{await api('/api/run/'+id,'POST',d);loadHome()}catch(e){toast(e.message)}}
 async function sendOtp(rid){const v=$('#otp'+rid).value.trim();if(!v)return toast('Type the code first');
   try{await api(`/api/runs/${rid}/otp`,'POST',{value:v});toast('Code sent');window._sig=null;loadHome()}catch(e){toast(e.message)}}
 
@@ -105,7 +131,7 @@ async function loadSetup(){
   const P=Object.fromEntries(cfg.platforms.map(p=>[p.id,p.label]));
   const brandRows=cfg.brands.map(b=>`<tr><td><b>${esc(b.name)}</b></td><td>${b.sheet_id?`<a target=_blank href="https://docs.google.com/spreadsheets/d/${esc(b.sheet_id)}">Open sheet ↗</a>`:'<span class=hint>no sheet yet</span>'}</td>
     <td style="text-align:right"><button class="btn small" onclick="editBrand('${encodeURIComponent(b.name)}')">Edit</button> <button class="btn small danger" onclick="delBrand('${encodeURIComponent(b.name)}')">Delete</button></td></tr>`).join('');
-  const loginRows=cfg.accounts.map(a=>`<tr><td><b>${esc(a.brand)}</b></td><td>${esc(P[a.platform]||a.platform)}</td><td>${esc(a.login_id)}</td>
+  const loginRows=cfg.accounts.map(a=>`<tr><td><b>${esc(a.brand)}</b></td><td>${esc(P[a.platform]||a.platform)}</td><td>${esc(a.login_id)}</td><td>${esc(a.report_hint)}</td>
     <td>${a.has_password?'<span class=chip>password saved</span>':''}</td>
     <td style="text-align:right"><button class="btn small" onclick="editLogin(${a.id})">Edit</button> <button class="btn small danger" onclick="delLogin(${a.id})">Delete</button></td></tr>`).join('');
   $('#app').innerHTML=`<h1>Setup</h1><p class=sub>Add your brands and the platform logins we should use. Changes save instantly.</p>
@@ -113,9 +139,11 @@ async function loadSetup(){
    ${cfg.brands.length?`<table style="margin-top:10px">${brandRows}</table>`:''}</div>
   <div class=card><div class=row><div class=grow><h2>2 · Platform logins</h2><div class=hint>The email you use to sign in to each platform's seller portal.</div></div>
    <button class="btn primary" onclick="editLogin()" ${cfg.brands.length?'':'disabled title="Add a brand first"'}>+ Add login</button></div>
-   ${cfg.accounts.length?`<table style="margin-top:10px"><tr><th>Brand</th><th>Platform</th><th>Email</th><th></th><th></th></tr>${loginRows}</table>`:''}</div>
+   ${cfg.accounts.length?`<table style="margin-top:10px"><tr><th>Brand</th><th>Platform</th><th>Email</th><th>Report</th><th></th><th></th></tr>${loginRows}</table>`:''}</div>
   <div class=card><h2>3 · Schedule</h2><div class=hint>Reports run on their own at this time every day, as long as this app is open.</div>
-   <div class=row style="margin-top:12px"><input type=time id=sched value="${esc(cfg.schedule_time)}" style="width:160px"><button class=btn onclick=saveSched()>Save time</button></div></div>
+   <div class=row style="margin-top:12px"><input type=time id=sched value="${esc(cfg.schedule_time)}" style="width:160px"><button class=btn onclick=saveSched()>Save time</button></div>
+   <label style="font-weight:500;display:flex;gap:8px;align-items:center;margin-top:16px"><input type=checkbox id=keepOpen onchange=saveSched() style="width:auto" ${cfg.keep_browser_open?'checked':''}> Leave Chrome open after each report downloads (you close it yourself)</label>
+   <div class=hint>Turn this off for fully automatic runs - otherwise the next login waits until you close the window.</div></div>
   <div class=card><h2>4 · Share with your team (optional)</h2>
    <div class=hint>Connect one Google Sheet and everyone's computer shows the same brands and logins. Passwords are never shared.</div>
    <label>Shared Google Sheet link</label><input id=ssid value="${esc(cfg.shared_sheet_id)}" placeholder="Paste the link of the team's config sheet">
@@ -128,20 +156,21 @@ function editBrand(enc){const b=enc?cfg.brands.find(x=>x.name==decodeURIComponen
 async function saveBrand(){const n=$('#bName').value.trim();if(!n)return toast('Brand name is required');
   await api('/api/brands','POST',{name:n,sheet_id:$('#bSheet').value});dBrand.close();toast('Brand saved');loadSetup()}
 async function delBrand(enc){const n=decodeURIComponent(enc);if(!confirm(`Delete ${n} and all its logins?`))return;await api('/api/brands/'+enc,'DELETE');loadSetup()}
-function platChange(){const p=cfg.platforms.find(x=>x.id==$('#lPlat').value);$('#pwWrap').style.display=p&&p.needs_password?'block':'none'}
+function platChange(){const p=cfg.platforms.find(x=>x.id==$('#lPlat').value);$('#pwWrap').style.display=p&&p.needs_password?'block':'none';
+  $('#rpWrap').style.display=p&&p.has_reports?'block':'none';if(p&&p.has_reports&&!$('#lReport').value&&!$('#lPlat').disabled)$('#lReport').value='gamma'}
 function editLogin(id){const a=id?cfg.accounts.find(x=>x.id==id):null;
   $('#dLoginTitle').textContent=a?'Edit login':'Add login';
   $('#lBrand').innerHTML=cfg.brands.map(b=>`<option>${esc(b.name)}</option>`).join('');
   $('#lPlat').innerHTML=cfg.platforms.map(p=>`<option value="${p.id}" ${p.ready?'':'disabled'}>${esc(p.label)}${p.ready?'':' - coming soon'}</option>`).join('');
   if(a){$('#lBrand').value=a.brand;$('#lPlat').value=a.platform}
   $('#lBrand').disabled=$('#lPlat').disabled=!!a;
-  $('#lEmail').value=a?a.login_id:'';$('#lNotes').value=a?a.notes:'';$('#lPw').value='';platChange();dLogin.showModal()}
+  $('#lEmail').value=a?a.login_id:'';$('#lNotes').value=a?a.notes:'';$('#lPw').value='';$('#lReport').value=a?a.report_hint:'';platChange();dLogin.showModal()}
 async function saveLogin(){const e=$('#lEmail').value.trim();if(!e)return toast('Login email is required');
-  await api('/api/accounts','POST',{brand:$('#lBrand').value,platform:$('#lPlat').value,login_id:e,notes:$('#lNotes').value,password:$('#lPw').value});
+  await api('/api/accounts','POST',{brand:$('#lBrand').value,platform:$('#lPlat').value,login_id:e,notes:$('#lNotes').value,password:$('#lPw').value,report_hint:$('#lReport').value});
   dLogin.close();toast('Login saved');loadSetup()}
 async function delLogin(id){if(!confirm('Delete this login?'))return;await api('/api/accounts/'+id,'DELETE');loadSetup()}
-async function saveSched(){await api('/api/prefs','POST',{schedule_time:$('#sched').value,shared_sheet_id:cfg.shared_sheet_id});toast('Schedule saved')}
-async function saveShare(){await api('/api/prefs','POST',{schedule_time:cfg.schedule_time,shared_sheet_id:$('#ssid').value});toast('Saved');loadSetup()}
+async function saveSched(){await api('/api/prefs','POST',{schedule_time:$('#sched').value,shared_sheet_id:cfg.shared_sheet_id,keep_browser_open:$('#keepOpen').checked});toast('Saved')}
+async function saveShare(){await api('/api/prefs','POST',{schedule_time:cfg.schedule_time,shared_sheet_id:$('#ssid').value,keep_browser_open:cfg.keep_browser_open});toast('Saved');loadSetup()}
 async function syncNow(){try{const d=await api('/api/sync','POST');toast(d.message);loadSetup()}catch(e){toast('Sync failed: '+e.message)}}
 
 route();setInterval(()=>{if(page()=='home')loadHome().catch(()=>{})},2000);

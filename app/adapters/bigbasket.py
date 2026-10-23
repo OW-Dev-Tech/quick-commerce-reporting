@@ -3,16 +3,30 @@ Flutter's accessibility layer to get real, clickable elements.
 
 Implemented: email + OTP login, session reuse. TODO: report download (needs report details)."""
 import re
+import time
 from playwright.sync_api import sync_playwright
+from .. import db
 from .base import Adapter
 
 URL = "https://nucleus.bigbasket.com/#/onboarding"
+DASH = "https://nucleus.bigbasket.com/#/dashboard"
+LIST_API = "https://nucleus.bigbasket.com/stitch/vendor/transactions/?page=1&page_size=20&group=0"
+DONE = 4   # transaction status for "Completed"
+REPORT_WAIT_SECONDS = 15 * 60
 
 
 def _enable_semantics(pg):
-    pg.wait_for_selector("flt-semantics-placeholder", state="attached", timeout=60000)
+    """Switch on Flutter's accessibility layer (once per page load)."""
+    if pg.locator("flt-semantics-placeholder").count() == 0:
+        pg.wait_for_selector("flt-semantics-placeholder", state="attached", timeout=60000)
     pg.locator("flt-semantics-placeholder").dispatch_event("click")
     pg.wait_for_timeout(1500)
+
+
+def _logged_in(pg):
+    """Logged-out users are bounced to #/onboarding (the sign-in / OTP flow lives there, and it always
+    shows 'Sign In'), so being anywhere else means we're in."""
+    return "onboarding" not in pg.url
 
 
 def _type_into(pg, box, text):
@@ -45,18 +59,27 @@ class BigBasketAdapter(Adapter):
             pg = context.new_page()
             try:
                 ctx.log("Opening BigBasket portal")
-                pg.goto(URL, wait_until="domcontentloaded")
+                landing = DASH if ctx.session_file.exists() else URL
+                pg.goto(landing, wait_until="domcontentloaded")
                 _enable_semantics(pg)
-                pg.wait_for_timeout(3000)
+                pg.wait_for_timeout(4000)
 
-                if _on_login_screen(pg):
-                    self._login(ctx, pg)
-                else:
+                if _logged_in(pg):
                     ctx.log("Existing session still valid")
+                else:
+                    if landing == DASH:
+                        ctx.log("Saved session expired, signing in again")
+                        pg.goto(URL)
+                        pg.wait_for_timeout(3000)
+                    self._login(ctx, pg)
 
                 context.storage_state(path=str(ctx.session_file))
-                ctx.log("Logged in. Report download not configured yet.")
-                return []
+                self._open_view_reports(ctx, pg)
+                files = [self._generate_and_download(ctx, pg, context)]
+                if db.get_setting("keep_browser_open", "1") == "1":
+                    ctx.log("Done. The browser stays open - close the Chrome window when you're done.")
+                    self._wait_until_closed(ctx, pg, context)
+                return files
             except Exception:
                 try:
                     pg.screenshot(path=str(ctx.out_dir / "error.png"))
@@ -66,6 +89,92 @@ class BigBasketAdapter(Adapter):
                 raise
             finally:
                 browser.close()
+
+    def _open_view_reports(self, ctx, pg):
+        """Sidebar: Analytics Overview -> View Reports. The sidebar isn't in Flutter's accessibility
+        tree, so click by position (the window size is fixed at 1280x800)."""
+        ctx.log("Opening Analytics Overview > View Reports")
+        pg.mouse.click(148, 289)
+        pg.wait_for_timeout(1500)
+        pg.mouse.click(127, 399)
+        pg.wait_for_timeout(4000)
+
+    def _transactions(self, context):
+        r = context.request.get(LIST_API)
+        if not r.ok:
+            raise RuntimeError(f"Could not read the report list (HTTP {r.status})")
+        return r.json()["data"]["transactions"]
+
+    def _generate_and_download(self, ctx, pg, context):
+        """View Reports page -> Generate -> fill the form -> Submit -> wait -> download the CSV."""
+        start, end = ctx.params["start_date"], ctx.params["end_date"]
+        hint = (ctx.account.get("report_hint") or "gamma").strip()
+        email = ctx.account["login_id"].lower()
+        before = max([t["id"] for t in self._transactions(context)] or [0])
+
+        ctx.log(f"Generating report '{hint}' for {start} to {end}, all cities")
+        pg.mouse.click(652, 252)                       # Generate
+        pg.wait_for_timeout(3000)
+        pg.mouse.click(888, 248)                       # Select Report
+        pg.wait_for_timeout(800)
+        pg.keyboard.type(hint, delay=100)
+        pg.wait_for_timeout(1500)
+        pg.mouse.click(700, 298)                       # first match
+        pg.wait_for_timeout(2500)
+        # The end-date box rejects typing once a start date is set, so fill end first, then start.
+        pg.mouse.click(860, 357); pg.wait_for_timeout(1200); pg.keyboard.type(end, delay=100)
+        pg.wait_for_timeout(800)
+        pg.mouse.click(860, 302); pg.wait_for_timeout(1200); pg.keyboard.type(start, delay=100)
+        pg.wait_for_timeout(800)
+        pg.mouse.click(889, 505)                       # >>  all cities
+        pg.wait_for_timeout(1500)
+        pg.screenshot(path=str(ctx.out_dir / "form_filled.png"))
+        pg.mouse.click(1132, 679)                      # Submit
+        ctx.log("Report requested, waiting for BigBasket to build it")
+
+        deadline = time.time() + REPORT_WAIT_SECONDS
+        last = None
+        while time.time() < deadline:
+            pg.wait_for_timeout(5000)
+            mine = [t for t in self._transactions(context) if t["id"] > before
+                    and (not t.get("downloader_email") or t["downloader_email"].lower() == email)
+                    and hint.lower() in (t.get("report_display_name", "") + t.get("report_slug", "")).lower()]
+            if not mine:
+                if time.time() > deadline - REPORT_WAIT_SECONDS + 90:
+                    pg.screenshot(path=str(ctx.out_dir / "error.png"))
+                    raise RuntimeError("BigBasket did not accept the report request - check the dates and report name")
+                continue
+            t = max(mine, key=lambda x: x["id"])
+            if t["status"] != last:
+                ctx.log(f"Report status code: {t['status']}")
+                last = t["status"]
+            if t["status"] == DONE and t.get("is_downloadable"):
+                break
+        else:
+            raise RuntimeError("Report was not ready after 15 minutes")
+
+        ctx.log(f"Report ready ({t.get('row_count', '?')} rows), downloading")
+        pg.mouse.click(1262, 252)                      # refresh the list so the new row is on top
+        pg.wait_for_timeout(3000)
+        with pg.expect_download(timeout=60000) as d:
+            pg.mouse.click(1259, 383)                  # download arrow on the top (newest) row
+        path = ctx.out_dir / d.value.suggested_filename
+        d.value.save_as(str(path))
+        ctx.log(f"Downloaded {path.name}")
+        return path
+
+    def _wait_until_closed(self, ctx, pg, context):
+        """Keep the window open until the user closes it (needed while setting up / exploring)."""
+        try:
+            while not pg.is_closed():
+                pg.wait_for_timeout(1000)
+        except Exception:
+            pass
+        try:
+            context.storage_state(path=str(ctx.session_file))
+        except Exception:
+            pass
+        ctx.log("Browser closed")
 
     def _login(self, ctx, pg):
         ctx.log(f"Signing in as {ctx.account['login_id']}")
@@ -98,8 +207,8 @@ class BigBasketAdapter(Adapter):
         if submit.count():
             submit.first.click()
 
-        for _ in range(30):            # up to ~30s for the login screen to go away
+        for _ in range(40):            # up to ~40s for the dashboard to appear
             pg.wait_for_timeout(1000)
-            if not _on_login_screen(pg):
+            if _logged_in(pg):
                 return
-        raise RuntimeError("Still on login screen after OTP - wrong/expired OTP or portal changed")
+        raise RuntimeError("Dashboard did not appear after OTP - wrong/expired OTP or portal changed")

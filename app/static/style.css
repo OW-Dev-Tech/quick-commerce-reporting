@@ -25,6 +25,7 @@ h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:0 0 4px}
 .btn.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-fg)}.btn.primary:hover{filter:brightness(1.08)}
 .btn.big{padding:12px 22px;font-size:16px}.btn.small{padding:5px 11px;font-size:13px}
 .btn.danger{color:var(--bad)}
+.btn.on{background:var(--run-bg);border-color:var(--brand);color:var(--brand)}
 .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 11px;border-radius:99px;font-size:13px;font-weight:700;white-space:nowrap}
 .pill.done{background:var(--ok-bg);color:var(--ok)}.pill.waiting_otp{background:var(--warn-bg);color:var(--warn)}
 .pill.failed{background:var(--bad-bg);color:var(--bad)}.pill.running,.pill.queued{background:var(--run-bg);color:var(--run)}

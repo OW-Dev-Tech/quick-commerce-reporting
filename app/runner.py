@@ -1,5 +1,5 @@
 import json, queue, threading, traceback
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from . import db, secrets_store, sheets
 from .adapters import get_adapter
 from .adapters.base import Ctx
@@ -12,19 +12,24 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
-def enqueue(account_id):
+def yesterday():
+    return str(date.today() - timedelta(days=1))
+
+
+def enqueue(account_id, start=None, end=None):
     running = db.q("SELECT id FROM runs WHERE account_id=? AND day=? AND status IN ('queued','running','waiting_otp')",
                    (account_id, str(date.today())))
     if running:
         return running[0]["id"]
-    rid = db.x("INSERT INTO runs(account_id,day,status,started) VALUES(?,?,?,?)",
-               (account_id, str(date.today()), "queued", _now()))
+    start, end = start or yesterday(), end or start or yesterday()
+    rid = db.x("INSERT INTO runs(account_id,day,status,started,start_date,end_date) VALUES(?,?,?,?,?,?)",
+               (account_id, str(date.today()), "queued", _now(), start, end))
     _jobs.put(rid)
     return rid
 
 
-def enqueue_all():
-    return [enqueue(a["id"]) for a in db.q("SELECT id FROM accounts")]
+def enqueue_all(start=None, end=None):
+    return [enqueue(a["id"], start, end) for a in db.q("SELECT id FROM accounts")]
 
 
 def submit_otp(run_id, value):
@@ -66,7 +71,8 @@ def _execute(rid):
     out = db.DATA / "output" / str(date.today()) / f"{acct['brand']}__{acct['platform']}".replace(" ", "_")
     out.mkdir(parents=True, exist_ok=True)
     try:
-        ctx = Ctx(acct, secrets_store.get_password(acct["brand"], acct["platform"]), out, log, ask_otp)
+        ctx = Ctx(acct, secrets_store.get_password(acct["brand"], acct["platform"]), out, log, ask_otp,
+                  {"start_date": run["start_date"], "end_date": run["end_date"]})
         files = get_adapter(acct["platform"]).run(ctx)
         brand = db.q("SELECT sheet_id FROM brands WHERE name=?", (acct["brand"],))
         sheets.push_report(brand[0]["sheet_id"] if brand else "", acct["platform"], files, log)

@@ -15,6 +15,18 @@ CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);
 """)
 
 
+def _migrate(table, column, ddl):
+    cols = [r[1] for r in _conn.execute(f"PRAGMA table_info({table})")]
+    if column not in cols:
+        _conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        _conn.commit()
+
+
+_migrate("accounts", "report_hint", "TEXT DEFAULT ''")
+_migrate("runs", "start_date", "TEXT DEFAULT ''")
+_migrate("runs", "end_date", "TEXT DEFAULT ''")
+
+
 def q(sql, args=()):
     with _lock:
         return [dict(r) for r in _conn.execute(sql, args).fetchall()]

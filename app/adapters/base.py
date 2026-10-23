@@ -7,8 +7,9 @@ SESSIONS.mkdir(exist_ok=True)
 
 class Ctx:
     """Handed to adapters by the runner."""
-    def __init__(self, account, password, out_dir, log, ask_otp):
+    def __init__(self, account, password, out_dir, log, ask_otp, params=None):
         self.account, self.password, self.out_dir = account, password, Path(out_dir)
+        self.params = params or {}   # e.g. start_date / end_date (YYYY-MM-DD)
         self.log, self.ask_otp = log, ask_otp
         self.session_file = SESSIONS / f"{account['brand']}__{account['platform']}.json".replace(" ", "_")
 
