@@ -74,9 +74,12 @@ def _execute(rid):
              (_now(), json.dumps([str(f) for f in files]), rid))
         log("Done")
     except Exception as e:
-        log(f"FAILED: {e}\n{traceback.format_exc()}")
+        log(f"FAILED: {e}")
+        log("TRACE\n" + traceback.format_exc())
         db.x("UPDATE runs SET status='failed', finished=? WHERE id=?", (_now(), rid))
 
 
 def start():
+    # A previous session may have died mid-run; don't leave those looking active.
+    db.x("UPDATE runs SET status='failed', finished=? WHERE status IN ('queued','running','waiting_otp')", (_now(),))
     threading.Thread(target=_worker, daemon=True).start()

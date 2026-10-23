@@ -15,6 +15,16 @@ def _enable_semantics(pg):
     pg.wait_for_timeout(1500)
 
 
+def _type_into(pg, box, text):
+    """Flutter ignores Playwright's fill(); focus the field by clicking, then type like a keyboard."""
+    box.click()
+    pg.wait_for_timeout(400)
+    pg.keyboard.press("ControlOrMeta+A")
+    pg.keyboard.press("Backspace")
+    pg.keyboard.type(text, delay=70)
+    pg.wait_for_timeout(500)
+
+
 def _btn(pg, name):
     return pg.get_by_role("button", name=re.compile(name, re.I))
 
@@ -62,22 +72,18 @@ class BigBasketAdapter(Adapter):
         if _btn(pg, r"^sign in$").count():
             _btn(pg, r"^sign in$").first.click()
             pg.wait_for_timeout(1500)
-        box = pg.get_by_role("textbox").first
-        box.fill(ctx.account["login_id"])
+        _type_into(pg, pg.get_by_role("textbox").first, ctx.account["login_id"])
         _btn(pg, r"^verify$").first.click()
         ctx.log("Email submitted, waiting for OTP screen")
         pg.wait_for_timeout(3000)
 
         otp = ctx.ask_otp(f"Enter the OTP BigBasket emailed to {ctx.account['login_id']}")
-        boxes = pg.get_by_role("textbox")
-        n = boxes.count()
-        if n > 1:                      # one box per digit
-            for i, d in enumerate(otp[:n]):
-                boxes.nth(i).fill(d)
-        elif n == 1:
-            boxes.first.fill(otp)
-        else:
-            pg.keyboard.type(otp, delay=80)
+        # The OTP field is a hidden, already-focused input with a button drawn over it, so a click
+        # is intercepted. Focus it directly (no click) and type the digits.
+        field = pg.locator("input#one-time-code")
+        if field.count():
+            field.first.focus()
+        pg.keyboard.type(otp, delay=120)
         pg.wait_for_timeout(500)
         submit = _btn(pg, r"^(verify|submit|login|continue|confirm)")
         if submit.count():

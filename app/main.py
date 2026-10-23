@@ -1,4 +1,4 @@
-import json
+import json, re
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 from . import db, runner, secrets_store, shared_config
+from .adapters import PLATFORMS
 
 sched = BackgroundScheduler()
 
@@ -33,6 +34,12 @@ STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
+def sheet_id(v):
+    """Accept a full Google Sheet link or a bare ID."""
+    m = re.search(r"/d/([A-Za-z0-9_-]+)", v or "")
+    return m.group(1) if m else (v or "").strip()
+
+
 def _push():
     try:
         shared_config.push()
@@ -47,12 +54,7 @@ def index():
 
 @app.get("/settings")
 def settings_page():
-    return FileResponse(STATIC / "settings.html")
-
-
-@app.get("/runs/{rid}")
-def run_page(rid: int):
-    return FileResponse(STATIC / "run.html")
+    return FileResponse(STATIC / "index.html")
 
 
 @app.get("/api/status")
@@ -62,10 +64,15 @@ def status():
         (SELECT status FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) status,
         (SELECT files FROM runs r WHERE r.account_id=a.id AND r.day=? ORDER BY r.id DESC LIMIT 1) files
         FROM accounts a ORDER BY a.brand, a.platform""", (str(date.today()),) * 3)
+    labels = {p["id"]: p["label"] for p in PLATFORMS}
     for r in rows:
         r["status"] = r["status"] or "not_run"
         r["files"] = [Path(f).name for f in json.loads(r["files"] or "[]")]
-    return {"cells": rows, "shared": shared_config.enabled()}
+        r["platform_label"] = labels.get(r["platform"].lower(), r["platform"])
+        last = db.q("SELECT line FROM logs WHERE run_id=? AND line NOT LIKE 'TRACE%' ORDER BY id DESC LIMIT 1", (r["run_id"],)) if r["run_id"] else []
+        r["message"] = last[0]["line"] if last else ""
+    return {"cells": rows, "shared": shared_config.enabled(),
+            "schedule_time": db.get_setting("schedule_time", "10:00")}
 
 
 @app.post("/api/run/{account_id}")
@@ -114,7 +121,7 @@ def config():
         a["has_password"] = secrets_store.has_password(a["brand"], a["platform"])
     return {"brands": db.q("SELECT * FROM brands ORDER BY name"), "accounts": accts,
             "schedule_time": db.get_setting("schedule_time", "10:00"),
-            "shared_sheet_id": db.get_setting("shared_sheet_id"),
+            "shared_sheet_id": db.get_setting("shared_sheet_id"), "platforms": PLATFORMS,
             "service_account_present": shared_config.SA_PATH.exists(),
             "shared_enabled": shared_config.enabled()}
 
@@ -135,7 +142,7 @@ class Account(BaseModel):
 @app.post("/api/brands")
 def save_brand(b: Brand):
     db.x("INSERT INTO brands(name,sheet_id) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET sheet_id=excluded.sheet_id",
-         (b.name.strip(), b.sheet_id.strip()))
+         (b.name.strip(), sheet_id(b.sheet_id)))
     _push(); return {"ok": True}
 
 
@@ -167,7 +174,7 @@ class Prefs(BaseModel):
 
 @app.post("/api/prefs")
 def prefs(p: Prefs):
-    db.set_setting("schedule_time", p.schedule_time); db.set_setting("shared_sheet_id", p.shared_sheet_id.strip())
+    db.set_setting("schedule_time", p.schedule_time); db.set_setting("shared_sheet_id", sheet_id(p.shared_sheet_id))
     reschedule(); return {"ok": True}
 
 

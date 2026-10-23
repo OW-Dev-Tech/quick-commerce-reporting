@@ -1,9 +1,0 @@
-<!doctype html><meta charset=utf-8><title>Run logs</title><link rel=stylesheet href=/static/style.css>
-<nav><a href=/>Dashboard</a><a href=/settings>Settings</a></nav><h1>Run log <small id=st></small></h1><pre id=log></pre>
-<script>
-const rid=location.pathname.split('/').pop();
-async function l(){const d=await (await fetch(`/api/runs/${rid}/logs`)).json();
- document.getElementById('st').textContent=d.run.status;
- document.getElementById('log').textContent=d.logs.map(x=>x.ts+'  '+x.line).join('\n')}
-l();setInterval(l,2000);
-</script>
