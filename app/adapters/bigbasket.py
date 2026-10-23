@@ -78,14 +78,23 @@ class BigBasketAdapter(Adapter):
         pg.wait_for_timeout(3000)
 
         otp = ctx.ask_otp(f"Enter the OTP BigBasket emailed to {ctx.account['login_id']}")
-        # The OTP field is a hidden, already-focused input with a button drawn over it, so a click
-        # is intercepted. Focus it directly (no click) and type the digits.
+        # Flutter only activates a field on a real pointer tap, and an overlay button blocks Playwright's
+        # click(), so tap the first of the six boxes with a raw mouse click, then type.
         field = pg.locator("input#one-time-code")
-        if field.count():
-            field.first.focus()
-        pg.keyboard.type(otp, delay=120)
+        box = field.first.bounding_box() if field.count() else None
+        if box:
+            pg.mouse.click(box["x"] + 30, box["y"] + box["height"] / 2)
+        else:
+            pg.mouse.click(726, 360)
         pg.wait_for_timeout(500)
-        submit = _btn(pg, r"^(verify|submit|login|continue|confirm)")
+        pg.keyboard.type(otp, delay=150)
+        pg.wait_for_timeout(1000)
+        try:
+            pg.screenshot(path=str(ctx.out_dir / "otp_entered.png"))
+        except Exception:
+            pass
+        pg.wait_for_timeout(500)
+        submit = _btn(pg, r"^(sign in|verify|submit|login|continue|confirm)")
         if submit.count():
             submit.first.click()
 
