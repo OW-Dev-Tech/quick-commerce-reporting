@@ -10,6 +10,7 @@ from .base import Adapter
 
 URL = "https://nucleus.bigbasket.com/#/onboarding"
 DASH = "https://nucleus.bigbasket.com/#/dashboard"
+DOWNLOAD_API = "https://nucleus.bigbasket.com/stitch/vendor/download/?group_id={}"
 LIST_API = "https://nucleus.bigbasket.com/stitch/vendor/transactions/?page=1&page_size=20&group=0"
 DONE = 4   # transaction status for "Completed"
 REPORT_WAIT_SECONDS = 15 * 60
@@ -130,6 +131,10 @@ class BigBasketAdapter(Adapter):
         pg.wait_for_timeout(1500)
         pg.screenshot(path=str(ctx.out_dir / "form_filled.png"))
         pg.mouse.click(1132, 679)                      # Submit
+        pg.wait_for_timeout(2000)
+        pg.screenshot(path=str(ctx.out_dir / "after_submit.png"))   # shows the "Report queued" popup
+        pg.mouse.click(1062, 375)                      # the popup's X - back to the report list
+        pg.wait_for_timeout(1500)
         ctx.log("Report requested, waiting for BigBasket to build it")
 
         deadline = time.time() + REPORT_WAIT_SECONDS
@@ -154,13 +159,35 @@ class BigBasketAdapter(Adapter):
             raise RuntimeError("Report was not ready after 15 minutes")
 
         ctx.log(f"Report ready ({t.get('row_count', '?')} rows), downloading")
+        try:
+            path = self._download_via_api(ctx, context, t)
+        except Exception as e:
+            ctx.log(f"Direct download failed ({e}); trying the download button instead")
+            path = self._download_via_click(ctx, pg)
+        ctx.log(f"Downloaded {path.name}")
+        return path
+
+    def _download_via_api(self, ctx, context, t):
+        """The download button just calls this endpoint, which redirects to the file on S3."""
+        r = context.request.get(DOWNLOAD_API.format(t["transaction_id"]), max_redirects=0)
+        url = r.headers.get("location")
+        if r.status not in (301, 302, 303, 307) or not url:
+            raise RuntimeError(f"unexpected response HTTP {r.status}")
+        f = context.request.get(url)
+        if not f.ok:
+            raise RuntimeError(f"file fetch HTTP {f.status}")
+        name = url.split("?")[0].rsplit("/", 1)[-1] or f"report_{t['transaction_id']}.csv"
+        path = ctx.out_dir / name
+        path.write_bytes(f.body())
+        return path
+
+    def _download_via_click(self, ctx, pg):
         pg.mouse.click(1262, 252)                      # refresh the list so the new row is on top
         pg.wait_for_timeout(3000)
         with pg.expect_download(timeout=60000) as d:
             pg.mouse.click(1259, 383)                  # download arrow on the top (newest) row
         path = ctx.out_dir / d.value.suggested_filename
         d.value.save_as(str(path))
-        ctx.log(f"Downloaded {path.name}")
         return path
 
     def _wait_until_closed(self, ctx, pg, context):
